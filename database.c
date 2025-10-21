@@ -20,7 +20,7 @@ int db_execute_protected(const char *sql) {
     if (flock(db_fd, LOCK_EX | LOCK_NB) == -1) {
         if (errno == EWOULDBLOCK) {
             fprintf(stderr, "DB Locked: Concurrent operation in progress. Try again.\n");
-            return -2; // Custom error code for lock failure
+            return -2; 
         }
         perror("Error acquiring exclusive file lock (flock)");
         return -1;
@@ -85,7 +85,6 @@ int db_init() {
             "user_id INT, "
             "message TEXT, "
             "timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);"
-        // Pre-insert a few users for testing (hashed passwords would be used in a real system)
         "INSERT OR IGNORE INTO Users (user_id, username, password, role_id) VALUES "
             "(101, 'cust1', 'pass', 1), (102,'cust2','pass2',1), (201, 'emp1', 'pass', 2), (301, 'mgr1', 'pass', 3), (401, 'admin1', 'pass', 4);"
         "INSERT OR IGNORE INTO Accounts (account_id, user_id, balance) VALUES "

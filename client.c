@@ -12,11 +12,9 @@
 #define PORT 8080
 #define BUFFER_SIZE 2048
 
-// Global state
 int current_user_id = -1;
 int current_role_id = -1; // 1=Customer, 2=Employee, 3=Manager, 4=Admin
 
-// --- Networking Function ---
 void send_request(const char *request_message, char *response) {
     int sock_fd;
     struct sockaddr_in server_addr;
@@ -45,7 +43,6 @@ void send_request(const char *request_message, char *response) {
     close(sock_fd);
 }
 
-// --- Menu Handlers ---
 void clear_input_buffer() {
     int c;
     while ((c = getchar()) != '\n' && c != EOF);
@@ -54,7 +51,6 @@ void clear_input_buffer() {
 int get_int_input(const char *prompt) {
     int val;
     printf("%s", prompt);
-    // Use " %d" to consume leading whitespace
     if (scanf(" %d", &val) == 1) { 
         clear_input_buffer(); 
         return val;
@@ -63,7 +59,6 @@ int get_int_input(const char *prompt) {
     return -1;
 }
 
-// NOTE: customer_menu() itself remains clean, as new account creation happens before login.
 void customer_menu() {
     int choice;
     char request[BUFFER_SIZE];
@@ -106,14 +101,11 @@ void customer_menu() {
                 snprintf(request, BUFFER_SIZE, "LOGOUT|%d|%d", current_role_id, current_user_id);
                 send_request(request, response);
                 
-                // Print server response (should be SUCCESS|Session terminated.)
-                // (Optional: Print tokenized response for debugging)
                 
                 current_user_id = -1; 
                 current_role_id = -1; 
                 printf("Logged out successfully.\n"); 
                 
-                // IMPORTANT: Add a mandatory delay one last time to enforce OS cleanup timing
                 sleep(1); 
                 return;
             case 10: exit(0);
@@ -134,7 +126,6 @@ void customer_menu() {
     }
 }
 
-// Employee Menu
 void employee_menu() {
     int choice;
     char request[BUFFER_SIZE];
@@ -154,55 +145,48 @@ void employee_menu() {
         printf("8. Exit\n"); 
         choice = get_int_input("Enter choice: ");
 
-        // Determine the action and gather input
         switch(choice) {
-            case 1: // Add New Customer (ADD_CUSTOMER)
+            case 1: 
                 printf("Enter new Customer Username: "); scanf("%s", username); clear_input_buffer();
                 printf("Enter new Password: "); scanf("%s", password); clear_input_buffer();
                 printf("Enter Initial Balance: "); scanf("%s", balance_str); clear_input_buffer();
-                // Protocol: ADD_CUSTOMER|2|EMP_ID|USERNAME|PASSWORD|INITIAL_BALANCE
+                // ADD_CUSTOMER|2|EMP_ID|USERNAME|PASSWORD|INITIAL_BALANCE
                 snprintf(request, BUFFER_SIZE, "ADD_CUSTOMER|%d|%d|%s|%s|%s",
                          current_role_id, current_user_id, username, password, balance_str);
                 break;
 
-            case 2: // Modify Customer Details (MOD_CUSTOMER)
+            case 2: 
                 printf("Enter Customer User ID to modify: "); scanf("%s", target_id_str); clear_input_buffer();
                 printf("Enter NEW Password: "); scanf("%s", new_pass); clear_input_buffer();
-                // Protocol: MOD_CUSTOMER|2|EMP_ID|TARGET_USER_ID|NEW_PASS
+                // MOD_CUSTOMER|2|EMP_ID|TARGET_USER_ID|NEW_PASS
                 snprintf(request, BUFFER_SIZE, "MOD_CUSTOMER|%d|%d|%s|%s",
                          current_role_id, current_user_id, target_id_str, new_pass);
                 break;
 
-	    case 3: // Process Loan Applications (PROCESS_LOAN)
+	    case 3: 
                 printf("Enter Loan ID to process: "); scanf("%s", target_id_str); clear_input_buffer();
-                // FIX: Change the prompt to reflect the required strings
                 printf("Enter status (APPROVED/REJECTED): "); 
                 
-                // Read the status string (new_pass holds the status)
                 scanf("%s", new_pass); clear_input_buffer(); 
                 
-                // Protocol: PROCESS_LOAN|2|EMP_ID|LOAN_ID|STATUS
                 snprintf(request, BUFFER_SIZE, "PROCESS_LOAN|%d|%d|%s|%s",
                          current_role_id, current_user_id, target_id_str, new_pass);
                 break;
 
-            case 4: // View Customer Transactions (VIEW_PASSBOOK)
+            case 4: 
                 printf("Enter Customer User ID for Passbook: "); scanf("%s", target_id_str); clear_input_buffer();
-                // Protocol: VIEW_PASSBOOK|2|EMP_ID|TARGET_USER_ID
                 snprintf(request, BUFFER_SIZE, "VIEW_PASSBOOK|%d|%d|%s",
                          current_role_id, current_user_id, target_id_str);
                 break;
 
-            case 5: // View Assigned Loan Applications (Placeholder: VIEW_ASSIGNED_LOANS)
+            case 5: 
                 printf("Fetching assigned loans...\n");
-                // Protocol: VIEW_ASSIGNED_LOANS|2|EMP_ID
                 snprintf(request, BUFFER_SIZE, "VIEW_ASSIGNED_LOANS|%d|%d",
                          current_role_id, current_user_id);
                 break;
 
-            case 6: // Change Password (Self-service: CHANGE_PASS)
+            case 6: 
                 printf("Enter new password: "); scanf("%s", new_pass); clear_input_buffer();
-                // Protocol: CHANGE_PASS|2|EMP_ID|NEW_PASS
                 snprintf(request, BUFFER_SIZE, "CHANGE_PASS|%d|%d|%s",
                          current_role_id, current_user_id, new_pass);
                 break;
@@ -221,14 +205,12 @@ void employee_menu() {
             default: printf("Invalid choice.\n"); continue;
         }
 
-        // Send Request and Handle Response (standard logic)
         send_request(request, response);
         token = strtok(response, "|");
         if (token && strcmp(token, "SUCCESS") == 0) {
             printf(">> SUCCESS: ");
             token = strtok(NULL, "");
             if (token) {
-                // Special handling for Passbook display
                 if (choice == 4) {
                     printf("\n=================================================================================\n");
                     printf("Timestamp\t\t| Type\t\t| Amount\t| Details\n");
@@ -249,7 +231,6 @@ void employee_menu() {
     }
 }
 
-// Manager Menu
 void manager_menu() {
     int choice;
     char request[BUFFER_SIZE];
@@ -268,7 +249,7 @@ void manager_menu() {
         choice = get_int_input("Enter choice: ");
 
         switch (choice) {
-            case 1: // Activate/Deactivate Customer Accounts (ACT_DEACT_ACC)
+            case 1: 
                 printf("Enter Customer User ID: "); scanf("%s", target_id_str); clear_input_buffer();
                 printf("Enter new status (ACTIVATE/DEACTIVATE): "); scanf("%s", status_str); clear_input_buffer();
                 // Protocol: ACT_DEACT_ACC|3|MGR_ID|TARGET_USER_ID|STATUS
@@ -276,12 +257,11 @@ void manager_menu() {
                          current_role_id, current_user_id, target_id_str, status_str);
                 break;
                 
-            case 2: // Assign Loan Application Processes (ASSIGN_LOAN)
+            case 2: 
 		printf("\n--- Fetching Pending Loans ---\n");
                 snprintf(request, BUFFER_SIZE, "VIEW_LOANS|%d|%d", current_role_id, current_user_id);
                 send_request(request, response);
 
-                // Parse and print the list before asking for IDs
                 token = strtok(response, "|");
                 if (token && strcmp(token, "SUCCESS") == 0) {
                     printf(">> Loan Status List:\n");
@@ -292,33 +272,24 @@ void manager_menu() {
                     break; // Exit assignment if listing fails
                 }
 
-                // --- STEP 2: Gather assignment IDs ---
                 printf("\n--- Loan Assignment ---\n");
                 printf("Enter Loan ID to assign: "); scanf("%s", target_id_str); clear_input_buffer();
                 printf("Enter Employee ID: "); scanf("%s", employee_id_str); clear_input_buffer();
-
-                // --- STEP 3: Send Assignment Request (ASSIGN_LOAN) ---
-                // Protocol: ASSIGN_LOAN|3|MGR_ID|LOAN_ID|EMPLOYEE_ID
                 snprintf(request, BUFFER_SIZE, "ASSIGN_LOAN|%d|%d|%s|%s",
                          current_role_id, current_user_id, target_id_str, employee_id_str);
 
-                // Since this is the final intended action, fall through to the send/receive block
-                // (The BREAK is removed here, letting the main response handler execute)
                 break;
                 
-            case 3: // Review Customer Feedback (REVIEW_FEEDBACK)
-                // Protocol: REVIEW_FEEDBACK|3|MGR_ID
+            case 3: 
                 snprintf(request, BUFFER_SIZE, "REVIEW_FEEDBACK|%d|%d", current_role_id, current_user_id);
                 break;
                 
-            case 4: // Change Password (Self) (CHANGE_PASS)
+            case 4: 
                 printf("Enter new password: "); scanf("%s", new_pass); clear_input_buffer();
-                // Protocol: CHANGE_PASS|3|MGR_ID|NEW_PASS
                 snprintf(request, BUFFER_SIZE, "CHANGE_PASS|%d|%d|%s",
                          current_role_id, current_user_id, new_pass);
                 break;
-	    case 5: // Logout
-                // FIX: Send LOGOUT request and handle client-side cleanup and delay
+	    case 5: 
                 snprintf(request, BUFFER_SIZE, "LOGOUT|%d|%d", current_role_id, current_user_id);
                 send_request(request, response); 
                 
@@ -342,7 +313,6 @@ void manager_menu() {
             default: printf("Invalid choice.\n"); continue;
         }
 
-        // Send Request and Handle Response (standard logic)
         send_request(request, response);
         token = strtok(response, "|");
         if (token && strcmp(token, "SUCCESS") == 0) {
@@ -364,7 +334,6 @@ void manager_menu() {
     }
 }
 
-// Administrator Menu
 void administrator_menu() {
     int choice;
     char request[BUFFER_SIZE];
@@ -383,18 +352,16 @@ void administrator_menu() {
         choice = get_int_input("Enter choice: ");
 
         switch (choice) {
-            case 1: // Add New Bank Employee (ADD_EMPLOYEE)
+            case 1: 
                 printf("Enter new Employee Username: "); scanf("%s", username); clear_input_buffer();
                 printf("Enter new Password: "); scanf("%s", password); clear_input_buffer();
-                // Protocol: ADD_EMPLOYEE|4|ADM_ID|USERNAME|PASSWORD
                 snprintf(request, BUFFER_SIZE, "ADD_EMPLOYEE|%d|%d|%s|%s",
                          current_role_id, current_user_id, username, password);
                 break;
 
-            case 2: // Modify Customer/Employee Details (MOD_USER_DETAILS)
+            case 2: 
                 printf("Enter Target User ID: "); scanf("%s", target_id_str); clear_input_buffer();
                 printf("Enter NEW Password: "); scanf("%s", new_pass); clear_input_buffer();
-                // Protocol: MOD_USER_DETAILS|4|ADM_ID|TARGET_USER_ID|NEW_PASS
                 snprintf(request, BUFFER_SIZE, "MOD_USER_DETAILS|%d|%d|%s|%s",
                          current_role_id, current_user_id, target_id_str, new_pass);
                 break;
@@ -402,20 +369,17 @@ void administrator_menu() {
             case 3: // Manage User Roles (MANAGE_ROLES)
                 printf("Enter Target User ID: "); scanf("%s", target_id_str); clear_input_buffer();
                 printf("Enter NEW Role ID (1=Cust, 2=Emp, 3=Mgr, 4=Adm): "); scanf("%s", new_role_id_str); clear_input_buffer();
-                // Protocol: MANAGE_ROLES|4|ADM_ID|TARGET_USER_ID|NEW_ROLE_ID
                 snprintf(request, BUFFER_SIZE, "MANAGE_ROLES|%d|%d|%s|%s",
                          current_role_id, current_user_id, target_id_str, new_role_id_str);
                 break;
 
             case 4: // Change Password (Self) (CHANGE_PASS)
                 printf("Enter new password: "); scanf("%s", new_pass); clear_input_buffer();
-                // Protocol: CHANGE_PASS|4|ADM_ID|NEW_PASS
                 snprintf(request, BUFFER_SIZE, "CHANGE_PASS|%d|%d|%s",
                          current_role_id, current_user_id, new_pass);
                 break;
 
 	    case 5: // Logout
-                // FIX: Used inline logout logic with necessary sleep(1)
                 snprintf(request, BUFFER_SIZE, "LOGOUT|%d|%d", current_role_id, current_user_id);
                 send_request(request, response);
                 
@@ -452,7 +416,6 @@ void administrator_menu() {
 }
 
 
-// --- Main Client Program ---
 int main() {
     int role_choice;
     char username[50], password[50];
@@ -473,7 +436,6 @@ int main() {
                 continue;
             }
 
-            // If the user selects the Customer role (1), ask about new/existing account
             if (role_choice == 1) {
                 printf("\n--- Customer Access ---\n");
                 printf("1. Existing Account Login\n");
@@ -487,7 +449,6 @@ int main() {
                     printf("Enter Password: "); scanf("%s", password);
                     clear_input_buffer();
 
-                    // Protocol: CREATE_CUSTOMER|ROLE_ID|USERNAME|PASSWORD
                     snprintf(request, BUFFER_SIZE, "CREATE_CUSTOMER|%d|%s|%s", role_choice, username, password);
                     send_request(request, response);
 
@@ -497,7 +458,6 @@ int main() {
                         current_user_id = atoi(token);
                         current_role_id = role_choice; 
                         printf("Account created and logged in as User ID: %d.\n", current_user_id);
-                        // Skip the regular login prompt and go directly to the menu
                         continue; 
                     } else {
                         token = strtok(NULL, "|");
@@ -509,15 +469,12 @@ int main() {
                     printf("Invalid choice. Returning to role selection.\n");
                     continue;
                 }
-                // If customer_choice is 1 (Existing Account), fall through to the login prompt below
             }
             
-            // --- Existing Account Login ---
             printf("Enter Username: "); scanf("%s", username);
             printf("Enter Password: "); scanf("%s", password);
             clear_input_buffer();
 
-            // Protocol: LOGIN|ROLE_ID|USERNAME|PASSWORD
             snprintf(request, BUFFER_SIZE, "LOGIN|%d|%s|%s", role_choice, username, password);
             send_request(request, response);
 
@@ -534,7 +491,6 @@ int main() {
             }
         }
 
-        // Redirect to the appropriate menu after successful login
         if (current_user_id != -1) {
             switch (current_role_id) {
                 case 1: customer_menu(); break;

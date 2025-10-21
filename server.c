@@ -9,17 +9,14 @@
 #include <signal.h>
 #include <sys/wait.h>
 #include <sqlite3.h> 
+//for db_execute_protected method
 #include "database.c" 
 
+// exectute - cc server.c -o server -lsqlite3 ( link to libsqlite3.a static libarary)
 #define PORT 8080
 #define BACKLOG 10
 #define BUFFER_SIZE 2048
 #define MAX_TOKENS 10
-
-// --- Utility Structures and Functions ---
-void sigchld_handler(int s) {
-    while(waitpid(-1, NULL, WNOHANG) > 0);
-}
 
 typedef struct {
     int user_id;
@@ -29,7 +26,8 @@ typedef struct {
     char details[BUFFER_SIZE]; 
 } UserData;
 
-// SQLite Callbacks (kept for logic processing)
+
+//these callbacks are used below in sqliite3_exec() function to retreive and store data in Userdata structure
 static int auth_callback(void *data, int argc, char **argv, char **azColName) {
     UserData *u_data = (UserData *)data;
     if (argc >= 4) {
@@ -43,7 +41,6 @@ static int auth_callback(void *data, int argc, char **argv, char **azColName) {
 }
 
 static int single_amount_callback(void *data, int argc, char **argv, char **azColName) {
-    // data points to a double variable
     if (argc > 0 && argv[0]) {
         *(double *)data = atof(argv[0]);
     }
@@ -72,7 +69,6 @@ static int feedback_callback(void *data, int argc, char **argv, char **azColName
         return 1;
     }
     
-    // Format: FEEDBACK_ID | USER_ID | MESSAGE | TIMESTAMP
     if (argc >= 4) {
         snprintf(entry, 512, "[ID:%s, User:%s] %s (Time: %s)\n", argv[0], argv[1], argv[2], argv[3]);
         strncat(u_data->details, entry, BUFFER_SIZE - strlen(u_data->details) - 1);
@@ -80,13 +76,24 @@ static int feedback_callback(void *data, int argc, char **argv, char **azColName
     return 0;
 }
 
+//sets the isloggedin method to 0
 void clear_session_lock(int user_id);
+
 void handle_logout(char *response, int user_id) {
-    // FIX: Execute the lock clear immediately
     clear_session_lock(user_id);
     strcpy(response, "SUCCESS|Session terminated.");
 }
 
+
+//to prevent zombie process it will wait until parent terminates this process
+////-1 - any child 
+// Null - not interested in exit status
+// WHOHANG - non -bocking flag if no child waiting return 0
+void sigchld_handler(int s) {
+    while(waitpid(-1, NULL, WNOHANG) > 0);
+}
+
+//defining the methods here 
 void handle_admin_action(const char *action, const char *args[], int user_id, char *response);
 void handle_manager_action(const char *action, const char *args[], int user_id, char *response);
 void handle_employee_action(const char *action, const char *args[], int user_id, char *response);
@@ -110,15 +117,13 @@ int get_account_info(int user_id, UserData *u_data) {
     return (u_data->user_id != 0); 
 }
 
-// --- CORE HANDLERS (Security & Concurrency Focused) ---
 
-// Customer: Create New Account
 void handle_create_customer(const char *username, const char *password, char *response) {
     char sql[BUFFER_SIZE];
 
     snprintf(sql, BUFFER_SIZE,
         "BEGIN; "
-        "INSERT INTO Users (username, password, role_id) VALUES ('%s', '%s', 1); "
+        "INSERT INTO Users (username, password, role_id,is_logged_in) VALUES ('%s', '%s', 1,1); "
         "INSERT INTO Accounts (user_id, balance) VALUES (last_insert_rowid(), 0.0); "
         "COMMIT;",
         username, password);
@@ -149,8 +154,7 @@ void handle_create_customer(const char *username, const char *password, char *re
         strcpy(response, "ERROR|Account creation failed (Username likely exists).");
     }
 }
-
-// Login (Secure with Prepared Statements)
+//main login function
 int handle_login(const char *username, const char *password, int requested_role, UserData *result) {
     sqlite3_stmt *stmt;
     const char *sql =
@@ -179,13 +183,10 @@ int handle_login(const char *username, const char *password, int requested_role,
     sqlite3_finalize(stmt);
 
     if (result->user_id != -1) {
-        // --- Single Session Check ---
         UserData current_status;
         char sql_check[256];
         char *err_msg = 0;
-
-        // Query status (We need to check BEFORE setting, so this must be a separate SELECT)
-        // We use a simple select for status (not protected, as it's a read before a write)
+	//check is user already logged in
         snprintf(sql_check, 256, "SELECT is_logged_in FROM Users WHERE user_id=%d;", result->user_id);
 
         int is_logged_in_status = 0;
@@ -204,27 +205,26 @@ int handle_login(const char *username, const char *password, int requested_role,
         if (result->role_id != requested_role) return -2;
         if (result->is_active == 0) return -3;
 
-        // --- Set Session Lock (Lock only happens on successful login) ---
         char sql_lock[128];
+	//acquire lock on user session 
         snprintf(sql_lock, 128, "UPDATE Users SET is_logged_in=1 WHERE user_id=%d;", result->user_id);
-        db_execute_protected(sql_lock); // CRITICAL: Use protected execution for the write operation
+        db_execute_protected(sql_lock); 
 
-        return 1; // Success
+        return 1; 
     }
 
     return 0;
 }
 
+//called after logout to set is_logged_in = 0
 void clear_session_lock(int user_id) {
     if (user_id > 0) {
         char sql_unlock[128];
         snprintf(sql_unlock, 128, "UPDATE Users SET is_logged_in=0 WHERE user_id=%d;", user_id);
-        // This is executed as the child process exits, so protected execution is safest.
         db_execute_protected(sql_unlock);
     }
 }
 
-// --- Customer Handlers ---
 void handle_view_balance(int user_id, char *response) {
     UserData u_data;
     if (get_account_info(user_id, &u_data)) {
@@ -294,7 +294,8 @@ void handle_transfer(int user_id, const char *target_account_id_str, const char 
     }
     
     char sql[BUFFER_SIZE];
-    
+    // handles both withdraw from account1 and deposit to account 2
+    // adds transactions also 
     snprintf(sql, BUFFER_SIZE, 
         "BEGIN; "
         "UPDATE Accounts SET balance = balance - %f WHERE user_id = %d AND balance >= %f; "
@@ -338,7 +339,6 @@ void handle_view_history(int user_id, char *response) {
     }
 
     if (strlen(u_data.details) > 9) {
-        // Safe string concatenation
         strcpy(response, "SUCCESS|"); 
         strncat(response, u_data.details, BUFFER_SIZE - strlen(response) - 1);
     } else {
@@ -357,7 +357,8 @@ void handle_change_password(int user_id, const char *new_password, char *respons
     if (rc == 0) strcpy(response, "SUCCESS|Password changed successfully.");
     else strcpy(response, "ERROR|Failed to change password.");
 }
-// Customer: Apply for a Loan
+
+// Customer - Apply for a Loan
 void handle_apply_loan(int user_id, const char *amount_str, char *response) {
     double amount = atof(amount_str);
     char sql[BUFFER_SIZE];
@@ -366,8 +367,7 @@ void handle_apply_loan(int user_id, const char *amount_str, char *response) {
         strcpy(response, "ERROR|Invalid loan amount.");
         return;
     }
-
-    // Insert the loan application with PENDING status.
+    //inserting with pending status default
     snprintf(sql, BUFFER_SIZE,
         "INSERT INTO Loans (account_id, amount, status) "
         "SELECT account_id, %f, 'PENDING' FROM Accounts WHERE user_id=%d;",
@@ -383,19 +383,16 @@ void handle_apply_loan(int user_id, const char *amount_str, char *response) {
 static int loan_list_callback(void *data, int argc, char **argv, char **azColName) {
     UserData *u_data = (UserData *)data;
     char entry[512];
-
-    // Check if space remains in the buffer (BUFFER_SIZE is likely 2048)
+    
+    //buffer overflow prevention mechanism.
     if (strlen(u_data->details) >= BUFFER_SIZE - 512) {
-        return 1; // Stop fetching rows if buffer is almost full
+        return 1; 
     }
 
-    // Format: LOAN_ID | ACCOUNT_ID | AMOUNT | STATUS
-    // The query is expected to return: argv[0]=loan_id, argv[1]=account_id, argv[2]=amount, argv[3]=status
+    // LOAN_ID | ACCOUNT_ID | AMOUNT | STATUS
     if (argc >= 4) {
-        // Build the formatted entry string
         snprintf(entry, 512, "[ID:%s] Acc:%s - $%.2f - Status:%s\n", argv[0], argv[1], atof(argv[2]), argv[3]);
 
-        // Safely append to the main details buffer
         strncat(u_data->details, entry, BUFFER_SIZE - strlen(u_data->details) - 1);
     }
     return 0;
@@ -417,13 +414,11 @@ void handle_view_pending_loans(char *response) {
 
     if (rc != SQLITE_OK) {
         sqlite3_free(err_msg);
-        // FIX: Ensure error message is explicitly returned
         strcpy(response, "ERROR|Failed to fetch loan list.");
         return;
     }
 
     if (strlen(u_data.details) > 30) {
-        // FIX: Ensure the successful response is built correctly
         strcpy(response, "SUCCESS|");
         strncat(response, u_data.details, BUFFER_SIZE - strlen("SUCCESS|") - 1); // Use correct size calculation
     } else {
@@ -431,7 +426,6 @@ void handle_view_pending_loans(char *response) {
     }
 }
 
-// Customer: Adding Feedback
 void handle_add_feedback(int user_id, const char *message, char *response) {
     char sql[BUFFER_SIZE];
 
@@ -440,13 +434,10 @@ void handle_add_feedback(int user_id, const char *message, char *response) {
         return;
     }
 
-    // Insert feedback message. Note: This does not require financial concurrency.
     snprintf(sql, BUFFER_SIZE,
         "INSERT INTO Feedback (user_id, message) VALUES (%d, '%s');",
         user_id, message);
 
-    // Feedback is not a critical financial transaction, but we use protected
-    // execution for thread safety when modifying the DB.
     int rc = db_execute_protected(sql);
 
     if (rc == 0) strcpy(response, "SUCCESS|Feedback submitted. Thank you.");
@@ -454,7 +445,6 @@ void handle_add_feedback(int user_id, const char *message, char *response) {
     else strcpy(response, "ERROR|Feedback submission failed.");
 }
 
-// --- Employee Handlers ---
 void handle_add_new_customer(const char *username, const char *password, const char *initial_balance_str, char *response) {
     double initial_balance = atof(initial_balance_str);
     char sql[BUFFER_SIZE];
@@ -494,7 +484,6 @@ void handle_view_assigned_loans(int employee_id, char *response) {
         "SELECT loan_id, account_id, amount, status FROM Loans "
         "WHERE assigned_employee_id = %d AND (status = 'ASSIGNED' OR status = 'PROCESSING') ORDER BY loan_id ASC;", employee_id);
 
-    // Reuse the loan_list_callback (defined in previous steps) to format the output
     int rc = sqlite3_exec(db, sql, loan_list_callback, &u_data, &err_msg);
 
     if (rc != SQLITE_OK) {
@@ -523,12 +512,10 @@ void handle_process_loan_application(const char *loan_id_str, const char *status
     int rc = -1;
 
     if (strcmp(status_str, "APPROVED") == 0) {
-        // --- Approval Logic: Find loan amount and update account balance ---
         double loan_amount = 0.0;
         int account_id = -1;
         sqlite3_stmt *stmt;
 
-        // 1. Get loan details securely (amount and account_id)
         const char *sql_select = "SELECT amount, account_id FROM Loans WHERE loan_id=? AND status != 'APPROVED';";
 
         if (sqlite3_prepare_v2(db, sql_select, -1, &stmt, NULL) == SQLITE_OK) {
@@ -541,7 +528,6 @@ void handle_process_loan_application(const char *loan_id_str, const char *status
         }
 
         if (loan_amount > 0 && account_id != -1) {
-            // 2. Perform atomic update (update status, credit account, log transaction)
             snprintf(sql, BUFFER_SIZE,
                 "BEGIN; "
                 "UPDATE Loans SET status = 'APPROVED', assigned_employee_id = %d WHERE loan_id = %d; "
@@ -556,7 +542,6 @@ void handle_process_loan_application(const char *loan_id_str, const char *status
             return;
         }
     } else {
-        // --- Rejection Logic: Simple status update ---
         snprintf(sql, BUFFER_SIZE,
             "UPDATE Loans SET status = 'REJECTED', assigned_employee_id = %d WHERE loan_id = %d AND status != 'APPROVED';",
             employee_id, loan_id);
@@ -617,7 +602,7 @@ void handle_view_passbook(const char *target_user_id_str, char *response) {
 }
 
 
-// Manager: Activate/Deactivate Customer Accounts
+// Activate/Deactivate Customer Accounts
 void handle_activate_deactivate(const char *target_user_id_str, const char *status_str, char *response) {
     int target_user_id = atoi(target_user_id_str);
     int status_val = (strcmp(status_str, "ACTIVATE") == 0) ? 1 : 0;
@@ -633,7 +618,7 @@ void handle_activate_deactivate(const char *target_user_id_str, const char *stat
     else strcpy(response, "ERROR|Failed to modify account status.");
 }
 
-// Manager: Assign Loan Application Processes to Employees
+// Assigning Loan Application Processes to Employees
 void handle_assign_loan(const char *loan_id_str, const char *employee_id_str, char *response) {
     int loan_id = atoi(loan_id_str);
     int employee_id = atoi(employee_id_str);
@@ -676,7 +661,6 @@ void handle_review_feedback(char *response) {
 void handle_add_new_employee(const char *username, const char *password, char *response) {
     char sql[BUFFER_SIZE];
 
-    // Employee role_id is 2. No account table entry is needed here, just the User entry.
     snprintf(sql, BUFFER_SIZE,
         "BEGIN; "
         "INSERT INTO Users (username, password, role_id) VALUES ('%s', '%s', 2); "
@@ -703,16 +687,13 @@ void handle_admin_modify_user(const char *target_user_id_str, const char *new_pa
         return;
     }
 
-    // Update password for any user_id
     snprintf(sql, BUFFER_SIZE,
         "UPDATE Users SET password = '%s' WHERE user_id = %d;",
         new_password, target_user_id);
 
     int rc = db_execute_protected(sql);
 
-    // Check if any row was affected
     if (rc == 0) {
-        // NOTE: A more robust check would use sqlite3_changes() to ensure a row was updated
         strcpy(response, "SUCCESS|Details (Password) modified for user.");
     } else {
         strcpy(response, "ERROR|Failed to modify details (User ID invalid or DB error).");
@@ -729,7 +710,6 @@ void handle_manage_user_roles(const char *target_user_id_str, const char *new_ro
         return;
     }
 
-    // Update role for any user_id
     snprintf(sql, BUFFER_SIZE,
         "UPDATE Users SET role_id = %d WHERE user_id = %d;",
         new_role_id, target_user_id);
@@ -759,7 +739,6 @@ void handle_child_process(int client_fd) {
     char response[BUFFER_SIZE] = "ERROR|Unknown Request.";
     ssize_t bytes_read;
     
-    // 1. Declare user_id here to ensure global scope for cleanup
     int user_id = -1; 
     const char *final_action = "UNKNOWN";
     
@@ -783,13 +762,11 @@ void handle_child_process(int client_fd) {
             user_id = atoi(tokens[2]); // Assign to the function-scoped user_id
 	    final_action = action;
 
-            // --- Single Session Active Check (for all actions EXCEPT login/logout/create) ---
             if (strcmp(action, "LOGIN") != 0 && strcmp(action, "LOGOUT") != 0 && strcmp(action, "CREATE_CUSTOMER") != 0) {
                 
                 char sql_check[256];
                 int is_logged_in_status = 0;
                 
-                // Fetch current session status
                 snprintf(sql_check, 256, "SELECT is_logged_in FROM Users WHERE user_id=%d;", user_id);
                 sqlite3_stmt *check_stmt;
                 if (sqlite3_prepare_v2(db, sql_check, -1, &check_stmt, NULL) == SQLITE_OK) {
@@ -799,32 +776,26 @@ void handle_child_process(int client_fd) {
                     sqlite3_finalize(check_stmt);
                 }
                 
-                // If status is 0 (logged out), the session is invalid/expired. Deny the request.
                 if (is_logged_in_status == 0) {
                     strcpy(response, "ERROR|SESSION_EXPIRED");
                     goto cleanup_and_exit; // Jump to the end of the function
                 }
                 
-                // If status is 1 (logged in), refresh the lock (a benign UPDATE)
                 else {
                     char sql_refresh[128];
                     snprintf(sql_refresh, 128, "UPDATE Users SET is_logged_in=1 WHERE user_id=%d;", user_id);
                     db_execute_protected(sql_refresh);
                 }
             }
-            // --- End Session Check ---
 
-            // 0. LOGOUT (Must be handled first to trigger cleanup)
 	    if (strcmp(action, "LOGOUT") == 0 && num_tokens == 3) {
                 handle_logout(response,user_id);
             }
             
-            // 0. New Customer Creation
             else if (strcmp(action, "CREATE_CUSTOMER") == 0 && num_tokens == 4 && role_id == 1) {
                 handle_create_customer(tokens[2], tokens[3], response);
             }
 
-            // 0. Login Check
             else if (strcmp(action, "LOGIN") == 0 && num_tokens == 4) {
                 UserData u_data;
                 int login_status = handle_login(tokens[2], tokens[3], role_id, &u_data);
@@ -835,7 +806,6 @@ void handle_child_process(int client_fd) {
                 else strcpy(response, "ERROR|Invalid credentials or SQL error.");
             }
             
-            // 1. Customer Feature Integration (Role 1)
             else if (role_id == 1) {
                 if (strcmp(action, "VIEW_BALANCE") == 0) handle_view_balance(user_id, response);
                 else if (strcmp(action, "DEPOSIT") == 0) handle_deposit(user_id, tokens[3], response);
@@ -847,7 +817,6 @@ void handle_child_process(int client_fd) {
 		else if (strcmp(action, "ADD_FEEDBACK") == 0 && num_tokens == 4) handle_add_feedback(user_id, tokens[3], response);
             }
             
-            // 2. Employee Feature Integration (Role 2)
 	    else if (role_id == 2) {
                 if (strcmp(action, "ADD_CUSTOMER") == 0 && num_tokens == 6) handle_add_new_customer(tokens[3], tokens[4], tokens[5], response);
                 else if (strcmp(action, "MOD_CUSTOMER") == 0 && num_tokens == 5) handle_modify_customer(tokens[3], tokens[4], response);
@@ -857,7 +826,6 @@ void handle_child_process(int client_fd) {
                 else { handle_employee_action(action, (const char**)&tokens[3], user_id, response); }
             }
 
-            // 3. Manager Feature Integration (Role 3)
 	    else if (role_id == 3) {
                 if (strcmp(action, "ACT_DEACT_ACC") == 0 && num_tokens == 5) handle_activate_deactivate(tokens[3], tokens[4], response);
 		else if (strcmp(action, "VIEW_LOANS") == 0 && num_tokens == 3) handle_view_pending_loans(response);
@@ -867,19 +835,14 @@ void handle_child_process(int client_fd) {
                 else { handle_manager_action(action, (const char**)&tokens[3], user_id, response); }
             }
 
-            // 4. Admin Feature Integration (Role 4)
 	    else if (role_id == 4) {
                 if (strcmp(action, "ADD_EMPLOYEE") == 0 && num_tokens == 5) {
-                    // Format: ADD_EMPLOYEE|4|ADM_ID|USERNAME|PASSWORD
                     handle_add_new_employee(tokens[3], tokens[4], response);
                 } else if (strcmp(action, "MOD_USER_DETAILS") == 0 && num_tokens == 5) {
-                    // Format: MOD_USER_DETAILS|4|ADM_ID|TARGET_USER_ID|NEW_PASS
                     handle_admin_modify_user(tokens[3], tokens[4], response);
                 } else if (strcmp(action, "MANAGE_ROLES") == 0 && num_tokens == 5) {
-                    // Format: MANAGE_ROLES|4|ADM_ID|TARGET_USER_ID|NEW_ROLE_ID
                     handle_manage_user_roles(tokens[3], tokens[4], response);
                 } else if (strcmp(action, "CHANGE_PASS") == 0 && num_tokens == 4) {
-                    // Format: CHANGE_PASS|4|ADM_ID|NEW_PASS (Self-service)
                     handle_change_password(user_id, tokens[3], response);
                 } else {
                     handle_admin_action(action, (const char**)&tokens[3], user_id, response);
@@ -889,7 +852,6 @@ void handle_child_process(int client_fd) {
     }
     
 cleanup_and_exit: // <-- GOTO TARGET
-    // Clean up session and exit child process
 	int session_user_id = user_id; 
 
 	send(client_fd, response, strlen(response), 0);
@@ -900,7 +862,6 @@ cleanup_and_exit: // <-- GOTO TARGET
 }
 
 
-// --- Main Server Request Handler ---
 
 
 int main() {
